@@ -3,8 +3,8 @@
 import { Check, Copy, Share2 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
-import { compact, fullDate, timeAgo } from "@/lib/format";
-import { actions, useAppStore } from "@/lib/store";
+import { fullDate, timeAgo } from "@/lib/format";
+import { useFollow } from "@/hooks/useInteractions";
 import { toast } from "./toast";
 
 export function TimeAgo({ iso, className }: { iso: string; className?: string }) {
@@ -74,19 +74,24 @@ export function ShareButton({ path, title, className, label = "Share" }: { path:
 
 type FollowVariant = "solid" | "link" | "overlay";
 
+/** Hidden for your own account. The server supplies the initial state, and the button updates it optimistically. */
 export function FollowButton({
   userId,
+  following: serverFollowing,
+  isSelf = false,
   variant = "solid",
   hideWhenFollowing,
   className,
 }: {
   userId: string;
+  following: boolean;
+  isSelf?: boolean;
   variant?: FollowVariant;
   hideWhenFollowing?: boolean;
   className?: string;
 }) {
-  const following = useAppStore((s) => !!s.following[userId]);
-  if (userId === "me" || (hideWhenFollowing && following)) return null;
+  const { value: following, toggle } = useFollow(userId, serverFollowing);
+  if (isSelf || (hideWhenFollowing && following)) return null;
   const styles: Record<FollowVariant, string> = {
     solid: following
       ? "rounded-xl bg-elevated px-4 py-2 text-sm font-semibold hover:bg-line"
@@ -97,18 +102,8 @@ export function FollowButton({
       : "rounded-lg border border-white px-2.5 py-1 text-xs font-semibold text-white hover:bg-white hover:text-black",
   };
   return (
-    <button
-      type="button"
-      aria-pressed={following}
-      onClick={() => actions.toggleFollow(userId)}
-      className={cn("shrink-0 transition active:scale-95", styles[variant], className)}
-    >
+    <button type="button" aria-pressed={following} onClick={toggle} className={cn("shrink-0 transition active:scale-95", styles[variant], className)}>
       {following ? "Following" : "Follow"}
     </button>
   );
-}
-
-export function FollowerCount({ userId, base }: { userId: string; base: number }) {
-  const following = useAppStore((s) => !!s.following[userId]);
-  return <>{compact(base + (following ? 1 : 0))}</>;
 }

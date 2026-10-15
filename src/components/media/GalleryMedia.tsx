@@ -2,21 +2,18 @@
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState } from "react";
-import { Artwork } from "@/components/art/Artwork";
 import { cn } from "@/lib/cn";
-import { altText, ASPECT, frameClass, type MediaProps } from "./shared";
+import { altText, ASPECT, frameClass, ImgFill, type MediaProps } from "./shared";
 
 export function GalleryMedia({ post, variant }: MediaProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [index, setIndex] = useState(0);
-  const n = post.visuals.length;
+  const images = post.media.filter((m) => m.type === "image");
+  const n = images.length;
+  const first = images[0];
 
   if (variant === "tile") {
-    return (
-      <div className="absolute inset-0">
-        <Artwork visual={post.visuals[0]} label={altText(post)} />
-      </div>
-    );
+    return <div className="absolute inset-0 overflow-hidden bg-elevated">{first && <ImgFill src={first.url} alt={altText(post)} />}</div>;
   }
 
   const go = (to: number) => {
@@ -34,9 +31,9 @@ export function GalleryMedia({ post, variant }: MediaProps) {
         aria-roledescription="carousel"
         aria-label={`${post.title}, ${n} images`}
       >
-        {post.visuals.map((v, i) => (
-          <div key={i} className="relative h-full w-full shrink-0 snap-center" aria-roledescription="slide" aria-label={`${i + 1} of ${n}`}>
-            <Artwork visual={v} label={`${altText(post)} (${i + 1}/${n})`} fit={variant === "full" ? "contain" : "cover"} />
+        {images.map((m, i) => (
+          <div key={m.url} className="relative h-full w-full shrink-0 snap-center" aria-roledescription="slide" aria-label={`${i + 1} of ${n}`}>
+            <ImgFill src={m.url} alt={`${altText(post)} (${i + 1}/${n})`} fit={variant === "full" ? "contain" : "cover"} width={m.width} height={m.height} />
           </div>
         ))}
       </div>
@@ -64,8 +61,8 @@ export function GalleryMedia({ post, variant }: MediaProps) {
         </button>
       )}
       <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center gap-1.5">
-        {post.visuals.map((_, i) => (
-          <span key={i} className={cn("size-1.5 rounded-full transition-colors", i === index ? "bg-white" : "bg-white/45")} />
+        {images.map((m, i) => (
+          <span key={m.url} className={cn("size-1.5 rounded-full transition-colors", i === index ? "bg-white" : "bg-white/45")} />
         ))}
       </div>
     </div>

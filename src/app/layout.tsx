@@ -5,6 +5,8 @@ import { JsonLd } from "@/components/ui/primitives";
 import { Toaster } from "@/components/ui/toast";
 import { siteJsonLd } from "@/lib/seo";
 import { site } from "@/lib/site";
+import { getUnreadCount } from "@/server/queries/activity";
+import { getViewer } from "@/server/session";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
@@ -46,7 +48,9 @@ export const viewport: Viewport = {
 // Runs before paint so the saved theme never flashes. Dark is the default.
 const themeScript = `try{if(localStorage.getItem("theme")==="light")document.documentElement.classList.remove("dark")}catch(e){}`;
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const viewer = await getViewer();
+  const unread = viewer ? await getUnreadCount(viewer.id) : 0;
   return (
     <html lang="en" className={`dark ${inter.variable} ${instrument.variable} ${jetbrains.variable}`} suppressHydrationWarning>
       <head>
@@ -58,15 +62,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </a>
         <JsonLd data={siteJsonLd()} />
         <div className="flex min-h-dvh">
-          <Sidebar />
+          <Sidebar viewer={viewer} unread={unread} />
           <div className="min-w-0 flex-1">
-            <MobileHeader />
+            <MobileHeader viewer={viewer} unread={unread} />
             <main id="main" className="pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0">
               {children}
             </main>
           </div>
         </div>
-        <BottomNav />
+        <BottomNav viewer={viewer} />
         <Toaster />
       </body>
     </html>

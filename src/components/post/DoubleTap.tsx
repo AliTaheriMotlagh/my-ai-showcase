@@ -3,7 +3,6 @@
 import { Heart } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
-import { actions, useAppStore } from "@/lib/store";
 
 /** Instagram-style double-tap to like, with a heart burst. Ignores taps on controls. */
 export function DoubleTap({ onDoubleTap, children, className }: { onDoubleTap: () => void; children: ReactNode; className?: string }) {
@@ -14,7 +13,7 @@ export function DoubleTap({ onDoubleTap, children, className }: { onDoubleTap: (
     <div
       className={cn("relative touch-manipulation select-none", className)}
       onClick={(e) => {
-        if ((e.target as HTMLElement).closest("button, a, input, textarea, select")) return;
+        if ((e.target as HTMLElement).closest("button, a, input, textarea, select, audio, video")) return;
         const now = Date.now();
         if (now - last.current < 320) {
           last.current = 0;
@@ -33,15 +32,5 @@ export function DoubleTap({ onDoubleTap, children, className }: { onDoubleTap: (
         </span>
       ))}
     </div>
-  );
-}
-
-/** DoubleTap bound to the like store — usable from server components. */
-export function LikeOnDoubleTap({ postId, children, className }: { postId: string; children: ReactNode; className?: string }) {
-  const liked = useAppStore((s) => !!s.liked[postId]);
-  return (
-    <DoubleTap className={className} onDoubleTap={() => !liked && actions.toggleLike(postId)}>
-      {children}
-    </DoubleTap>
   );
 }

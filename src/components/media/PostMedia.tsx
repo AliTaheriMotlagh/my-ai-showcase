@@ -4,9 +4,9 @@ import { ChatMedia } from "./ChatMedia";
 import { CodeMedia } from "./CodeMedia";
 import { GalleryMedia } from "./GalleryMedia";
 import { ImageMedia } from "./ImageMedia";
+import { ModelMedia } from "./ModelMedia";
 import type { MediaProps } from "./shared";
 import { TextMedia } from "./TextMedia";
-import { ThreeDMedia } from "./ThreeDMedia";
 import { VideoMedia } from "./VideoMedia";
 
 export function PostMedia(props: MediaProps) {
@@ -28,6 +28,6 @@ export function PostMedia(props: MediaProps) {
     case "chart":
       return <ChartMedia {...props} />;
     case "3d":
-      return <ThreeDMedia {...props} />;
+      return <ModelMedia {...props} />;
   }
 }

@@ -5,13 +5,13 @@ import Link from "next/link";
 import { useState } from "react";
 import { Avatar } from "@/components/art/Avatar";
 import { PostMedia } from "@/components/media/PostMedia";
+import { useLike } from "@/hooks/useInteractions";
 import { FollowButton, TimeAgo } from "@/components/ui/client-bits";
 import { VerifiedBadge } from "@/components/ui/primitives";
 import { cn } from "@/lib/cn";
 import { compact } from "@/lib/format";
 import { KIND_MAP } from "@/lib/kinds";
 import { profileHref, tagHref } from "@/lib/links";
-import { actions, useAppStore } from "@/lib/store";
 import type { FeedPost } from "@/lib/types";
 import { DoubleTap } from "./DoubleTap";
 import { PostActions } from "./PostActions";
@@ -20,7 +20,7 @@ import { PromptPeek } from "./PromptPeek";
 
 export function PostCard({ post, preview = false }: { post: FeedPost; preview?: boolean }) {
   const [expanded, setExpanded] = useState(false);
-  const liked = useAppStore((s) => !!s.liked[post.id]);
+  const like = useLike(post);
   const href = `/p/${post.id}`;
   const meta = KIND_MAP[post.kind];
   const KindIcon = meta.icon;
@@ -61,11 +61,11 @@ export function PostCard({ post, preview = false }: { post: FeedPost; preview?: 
             )}
           </div>
         </div>
-        {!preview && <FollowButton userId={post.author.id} variant="link" hideWhenFollowing />}
+        {!preview && <FollowButton userId={post.author.id} following={post.viewer.following} isSelf={post.viewer.owner} variant="link" hideWhenFollowing />}
         {!preview && <PostMenu post={post} />}
       </header>
 
-      <DoubleTap onDoubleTap={() => !preview && !liked && actions.toggleLike(post.id)}>
+      <DoubleTap onDoubleTap={() => !preview && !like.liked && void like.toggle()}>
         <PostMedia post={post} variant="feed" />
       </DoubleTap>
 

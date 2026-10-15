@@ -1,17 +1,30 @@
 "use client";
 
-import { ImagePlus, Plus, Repeat2, Shuffle, Trash2, Upload } from "lucide-react";
+import { ImagePlus, Music2, Plus, Repeat2, Trash2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState, type ReactNode } from "react";
-import { Artwork } from "@/components/art/Artwork";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPostAction } from "@/app/actions";
 import { PostCard } from "@/components/post/PostCard";
 import { Spinner } from "@/components/ui/primitives";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/cn";
 import { KINDS, KIND_MODELS } from "@/lib/kinds";
-import { ART_STYLES, PALETTES } from "@/lib/palettes";
-import { actions, meAsUser, useAppStore, useHydrated, type Me } from "@/lib/store";
-import type { Aspect, ChartSpec, ChatMessage, FeedPost, PostKind, Visual } from "@/lib/types";
+import { aspectFor, measureFile, uploadFile } from "@/lib/upload";
+import { ACCEPT, fileProblem } from "@/lib/media-files";
+import { LIMITS, normalizeTags } from "@/lib/rules";
+import type { ChartSpec, ChatMessage, FeedPost, MediaItem, MediaType, PostKind } from "@/lib/types";
+import type { Viewer } from "@/server/session";
+
+/** A file the person picked, held in memory until they publish. Previews use an object URL. */
+interface Staged {
+  id: string;
+  file: File;
+  type: MediaType;
+  previewUrl: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+}
 
 interface Draft {
   kind: PostKind;
@@ -20,10 +33,11 @@ interface Draft {
   prompt: string;
   model: string;
   tags: string;
-  aspect: Aspect;
-  visual: Visual;
-  uploads: string[];
-  galleryCount: number;
+  images: Staged[];
+  video: Staged | null;
+  audio: Staged | null;
+  cover: Staged | null;
+  model3d: Staged | null;
   textForm: string;
   textBody: string;
   codeLang: string;
@@ -32,174 +46,247 @@ interface Draft {
   chat: ChatMessage[];
   chartType: ChartSpec["type"];
   chartRows: { label: string; value: number }[];
-  bpm: number;
-  duration: number;
-  shape: "sphere" | "cube" | "atom";
 }
 
 const LANGS = ["javascript", "typescript", "python", "rust", "go", "glsl", "sql", "css", "html"];
 const TEXT_FORMS = ["Poem", "Micro-fiction", "Essay", "Lyrics", "Haiku", "Script"];
-const newSeed = () => Math.floor(Math.random() * 2 ** 30);
+const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+/** Remixes copy the words (prompt, model, tags, text or code) but not the files. The remixer uploads their own. */
 function makeDraft(remix: FeedPost | null): Draft {
-  const base: Draft = {
-    kind: "image",
-    title: "",
+  return {
+    kind: remix?.kind ?? "image",
+    title: remix ? `${remix.title} (remix)`.slice(0, LIMITS.postTitle) : "",
     caption: "",
-    prompt: "",
-    model: KIND_MODELS.image[0],
-    tags: "",
-    aspect: "portrait",
-    visual: { seed: newSeed(), style: "mesh", palette: PALETTES[0].colors },
-    uploads: [],
-    galleryCount: 4,
-    textForm: "Poem",
-    textBody: "",
-    codeLang: "javascript",
-    codeFile: "sketch.js",
-    codeSource: "",
-    chat: [
+    prompt: remix?.prompt ?? "",
+    model: remix?.model ?? KIND_MODELS.image[0],
+    tags: remix ? [...remix.tags.filter((t) => t !== "remix"), "remix"].join(", ") : "",
+    images: [],
+    video: null,
+    audio: null,
+    cover: null,
+    model3d: null,
+    textForm: remix?.text?.form ?? "Poem",
+    textBody: remix?.text?.body ?? "",
+    codeLang: remix?.code?.language ?? "javascript",
+    codeFile: remix?.code?.filename ?? "sketch.js",
+    codeSource: remix?.code?.source ?? "",
+    chat: remix?.chat ?? [
       { role: "user", text: "" },
       { role: "ai", text: "" },
     ],
-    chartType: "bar",
-    chartRows: [
-      { label: "Mon", value: 12 },
-      { label: "Tue", value: 19 },
-      { label: "Wed", value: 15 },
-      { label: "Thu", value: 24 },
-    ],
-    bpm: 110,
-    duration: 12,
-    shape: "sphere",
-  };
-  if (!remix) return base;
-  return {
-    ...base,
-    kind: remix.kind,
-    title: `${remix.title} (remix)`,
-    prompt: remix.prompt,
-    model: remix.model,
-    tags: [...remix.tags.filter((t) => t !== "remix"), "remix"].join(", "),
-    aspect: remix.aspect,
-    visual: { ...remix.visuals[0], src: undefined, seed: newSeed() },
-    galleryCount: Math.max(2, remix.visuals.length),
-    textForm: remix.text?.form ?? base.textForm,
-    textBody: remix.text?.body ?? "",
-    codeLang: remix.code?.language ?? base.codeLang,
-    codeFile: remix.code?.filename ?? base.codeFile,
-    codeSource: remix.code?.source ?? "",
-    chat: remix.chat ?? base.chat,
-    chartType: remix.chart?.type ?? base.chartType,
-    chartRows: remix.chart ? remix.chart.labels.map((label, i) => ({ label, value: remix.chart!.values[i] })) : base.chartRows,
-    bpm: remix.audio?.bpm ?? base.bpm,
-    duration: remix.video?.duration ?? base.duration,
-    shape: remix.object3d?.shape ?? base.shape,
+    chartType: remix?.chart?.type ?? "bar",
+    chartRows: remix?.chart
+      ? remix.chart.labels.map((label, i) => ({ label, value: remix.chart!.values[i] }))
+      : [
+          { label: "Mon", value: 12 },
+          { label: "Tue", value: 19 },
+          { label: "Wed", value: 15 },
+          { label: "Thu", value: 24 },
+        ],
   };
 }
 
-function buildPost(d: Draft, me: Me, id: string, remix: FeedPost | null): FeedPost {
-  const visuals: Visual[] = d.uploads.length
-    ? (d.kind === "gallery" ? d.uploads : d.uploads.slice(0, 1)).map((src) => ({ ...d.visual, src }))
-    : d.kind === "gallery"
-      ? Array.from({ length: d.galleryCount }, (_, i) => ({ ...d.visual, seed: d.visual.seed + i * 7919 }))
-      : [d.visual];
-  const tags = d.tags
-    .split(/[,\s#]+/)
-    .map((t) => t.toLowerCase().replace(/[^a-z0-9]/g, ""))
-    .filter(Boolean)
-    .slice(0, 8);
-  const valid = d.chat.filter((m) => m.text.trim());
+async function stage(file: File, type: MediaType): Promise<Staged> {
+  const measured = await measureFile(file, type).catch(() => ({}));
+  return { id: newId(), file, type, previewUrl: URL.createObjectURL(file), ...measured };
+}
+
+/** Returns the first problem with the draft, in the same words the server would use. */
+function validate(d: Draft): string | null {
+  if (!d.title.trim()) return "Give your showcase a title.";
+  if (!d.model.trim()) return "Tell people which model or tool you used.";
+  switch (d.kind) {
+    case "image":
+      if (!d.images.length) return "Upload an image.";
+      break;
+    case "gallery":
+      if (d.images.length < 2) return "A series needs at least two images.";
+      break;
+    case "video":
+      if (!d.video) return "Upload a video.";
+      break;
+    case "audio":
+      if (!d.audio) return "Upload an audio file.";
+      break;
+    case "3d":
+      if (!d.model3d) return "Upload a .glb or .gltf model.";
+      break;
+    case "text":
+      if (!d.textBody.trim()) return "Add the writing.";
+      break;
+    case "code":
+      if (!d.codeSource.trim()) return "Add the code.";
+      break;
+    case "chat":
+      if (!d.chat.some((m) => m.text.trim())) return "Add at least one message.";
+      break;
+    case "chart":
+      if (!d.chartRows.length || d.chartRows.some((r) => !r.label.trim())) return "Every chart row needs a label.";
+      break;
+  }
+  return null;
+}
+
+/** Local preview model: the same shape the feed uses, built from the staged files. */
+function buildPreview(d: Draft, viewer: Viewer, remix: FeedPost | null): FeedPost {
+  const staged: Staged[] = [...d.images, ...(d.video ? [d.video] : []), ...(d.audio ? [d.audio] : []), ...(d.cover ? [d.cover] : []), ...(d.model3d ? [d.model3d] : [])];
+  const media: MediaItem[] = staged.map((s) => ({ url: s.previewUrl, type: s.type, mime: s.file.type, width: s.width, height: s.height, duration: s.duration }));
+  const first = d.images[0] ?? d.video;
   return {
-    id,
-    authorId: "me",
-    author: meAsUser(me),
+    id: "preview",
     kind: d.kind,
     title: d.title.trim() || "Untitled",
     caption: d.caption.trim(),
     prompt: d.prompt.trim(),
     model: d.model.trim() || "Unknown model",
-    tags,
+    tags: normalizeTags(d.tags),
     createdAt: new Date().toISOString(),
-    aspect: d.aspect,
-    visuals,
+    aspect: aspectFor(first?.width, first?.height),
+    media,
     stats: { likes: 0, comments: 0, views: 0, saves: 0, remixes: 0 },
     ...(d.kind === "text" && { text: { form: d.textForm, body: d.textBody } }),
     ...(d.kind === "code" && { code: { language: d.codeLang, filename: d.codeFile || "snippet", source: d.codeSource } }),
-    ...(d.kind === "chat" && { chat: valid.length ? valid : [{ role: "user" as const, text: "…" }] }),
+    ...(d.kind === "chat" && { chat: d.chat.filter((m) => m.text.trim()) }),
     ...(d.kind === "chart" && {
       chart: { type: d.chartType, labels: d.chartRows.map((r) => r.label || "—"), values: d.chartRows.map((r) => Math.max(0, r.value || 0)) },
     }),
-    ...(d.kind === "audio" && { audio: { duration: 180, bpm: d.bpm, key: "C minor", genre: d.tags.split(",")[0]?.trim() || "Electronic" } }),
-    ...(d.kind === "video" && { video: { duration: d.duration } }),
-    ...(d.kind === "3d" && { object3d: { shape: d.shape } }),
-    ...(remix && { remixOf: { id: remix.id, title: remix.title, username: remix.author.username } }),
+    remixOf: remix ? { id: remix.id, title: remix.title, username: remix.author.username } : null,
+    author: { id: viewer.id, username: viewer.username, name: viewer.name, headline: "", avatar: viewer.avatar, verified: false },
+    viewer: { liked: false, saved: false, following: false, owner: true },
   };
 }
 
-/** Downscale uploads in the browser so they fit in localStorage. */
-async function fileToDataUrl(file: File, max = 1280) {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  const ratio = bitmap.width / bitmap.height;
-  return { src: canvas.toDataURL("image/jpeg", 0.82), aspect: (ratio > 1.2 ? "landscape" : ratio < 0.9 ? "portrait" : "square") as Aspect };
-}
-
-export function Composer({ remix }: { remix: FeedPost | null }) {
-  const hydrated = useHydrated();
-  const me = useAppStore((s) => s.me);
+export function Composer({ remix, viewer }: { remix: FeedPost | null; viewer: Viewer }) {
   const router = useRouter();
   const [draft, setDraft] = useState(() => makeDraft(remix));
   const [view, setView] = useState<"edit" | "preview">("edit");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [staging, setStaging] = useState(false);
+
+  // Release object URLs for files that are no longer part of the draft, and everything on unmount.
+  const previewsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const live = new Set<string>([
+      ...draft.images.map((s) => s.previewUrl),
+      ...[draft.video, draft.audio, draft.cover, draft.model3d].filter((s): s is Staged => !!s).map((s) => s.previewUrl),
+    ]);
+    for (const url of previewsRef.current) if (!live.has(url)) URL.revokeObjectURL(url);
+    previewsRef.current = live;
+  }, [draft.images, draft.video, draft.audio, draft.cover, draft.model3d]);
+  useEffect(() => {
+    const urls = previewsRef.current;
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
+  const preview = useMemo(() => buildPreview(draft, viewer, remix), [draft, viewer, remix]);
 
-  if (!hydrated) {
-    return (
-      <div className="flex justify-center py-24">
-        <Spinner />
-      </div>
-    );
-  }
+  /** Adds picked files to the right slot. Bad files are reported, and the good ones still go in. */
+  const addFiles = async (files: FileList | File[] | null, slot: "images" | "video" | "audio" | "cover" | "model3d") => {
+    const picked = files ? [...files] : [];
+    if (!picked.length) return;
+    const type: MediaType = slot === "images" || slot === "cover" ? "image" : slot === "video" ? "video" : slot === "audio" ? "audio" : "model";
+    const problems: string[] = [];
+    const accepted = picked.filter((f) => {
+      const problem = fileProblem(f, type);
+      if (problem) problems.push(problem);
+      return !problem;
+    });
+    if (problems.length) toast(problems[0]);
+    if (!accepted.length) return;
 
-  const preview = buildPost(draft, me, "draft-preview", remix);
-  const usesVisual = ["image", "gallery", "video", "audio", "3d"].includes(draft.kind);
+    const limit = slot === "images" ? (draft.kind === "gallery" ? LIMITS.galleryImages : 1) : 1;
+    const room = slot === "images" ? Math.max(0, limit - draft.images.length) : 1;
+    const chosen = accepted.slice(0, room);
+    if (accepted.length > room) toast(room ? `You can add up to ${limit} images.` : "Remove the current file first.");
+    if (!chosen.length) return;
 
-  const handleFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setBusy(true);
+    setStaging(true);
     try {
-      const list = await Promise.all([...files].filter((f) => f.type.startsWith("image/")).slice(0, 5).map((f) => fileToDataUrl(f)));
-      if (!list.length) return toast("Please choose image files");
-      setDraft((d) => ({
-        ...d,
-        uploads: d.kind === "gallery" ? [...d.uploads, ...list.map((l) => l.src)].slice(0, 6) : [list[0].src],
-        aspect: list[0].aspect,
-      }));
+      const staged = await Promise.all(chosen.map((f) => stage(f, type)));
+      if (slot === "images") setDraft((d) => ({ ...d, images: [...d.images, ...staged].slice(0, limit) }));
+      else set(slot, staged[0]);
     } catch {
-      toast("Couldn't read that image");
+      toast("Couldn't read that file. Try a different one.");
     } finally {
-      setBusy(false);
+      setStaging(false);
     }
   };
 
-  const publish = () => {
-    if (!draft.title.trim()) {
-      setError("Give your showcase a title.");
+  const removeStaged = (slot: "images" | "video" | "audio" | "cover" | "model3d", id?: string) => {
+    if (slot === "images") set("images", draft.images.filter((s) => s.id !== id));
+    else set(slot, null);
+  };
+
+  const publish = async () => {
+    const problem = validate(draft);
+    if (problem) {
+      setError(problem);
       setView("edit");
       return;
     }
-    const post = buildPost(draft, me, `local-${Date.now().toString(36)}`, remix);
-    const ok = actions.addPost(post);
-    toast(ok ? "Published to your profile ✨" : "Published, but storage is full — it won't survive a reload");
-    router.push(`/p/${post.id}`);
+    setError("");
+    setBusy(true);
+    try {
+      const uploads: Staged[] = [
+        ...draft.images,
+        ...[draft.video, draft.audio, draft.cover, draft.model3d].filter((s): s is Staged => !!s),
+      ];
+
+      const media: MediaItem[] = [];
+      for (const [i, staged] of uploads.entries()) {
+        setStatus(uploads.length > 1 ? `Uploading ${i + 1} of ${uploads.length}…` : "Uploading…");
+        const url = await uploadFile(staged.file, staged.type, viewer.id);
+        media.push({
+          url,
+          type: staged.type,
+          mime: staged.file.type || (staged.type === "model" ? "model/gltf-binary" : "application/octet-stream"),
+          width: staged.width ?? null,
+          height: staged.height ?? null,
+          duration: staged.duration ?? null,
+        });
+      }
+
+      setStatus("Publishing…");
+      const first = draft.images[0] ?? draft.video;
+      const result = await createPostAction({
+        kind: draft.kind,
+        title: draft.title,
+        caption: draft.caption,
+        prompt: draft.prompt,
+        model: draft.model,
+        tags: normalizeTags(draft.tags),
+        aspect: aspectFor(first?.width, first?.height),
+        media,
+        remixOfId: remix?.id ?? null,
+        ...(draft.kind === "text" && { text: { form: draft.textForm, body: draft.textBody } }),
+        ...(draft.kind === "code" && { code: { language: draft.codeLang, filename: draft.codeFile || "snippet", source: draft.codeSource } }),
+        ...(draft.kind === "chat" && { chat: draft.chat.filter((m) => m.text.trim()) }),
+        ...(draft.kind === "chart" && {
+          chart: { type: draft.chartType, labels: draft.chartRows.map((r) => r.label.trim()), values: draft.chartRows.map((r) => Math.max(0, r.value || 0)) },
+        }),
+      });
+
+      if (!result.ok) {
+        setError(result.error);
+        setView("edit");
+        return;
+      }
+      toast("Published to your profile ✨");
+      router.push(`/p/${result.data.id}`);
+    } catch {
+      setError("The upload didn't finish. Check your connection and try again.");
+      setView("edit");
+    } finally {
+      setBusy(false);
+      setStatus("");
+    }
   };
+
+  const usesMedia = ["image", "gallery", "video", "audio", "3d"].includes(draft.kind);
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pb-16 pt-4 md:pt-8">
@@ -219,15 +306,17 @@ export function Composer({ remix }: { remix: FeedPost | null }) {
         </div>
       </div>
 
+      {remix && <p className="mb-6 text-sm text-muted">Remixing copies the prompt, model and tags, and links back to the original. Upload your own files for this version.</p>}
+
       <div className="grid grid-cols-[minmax(0,1fr)] gap-8 lg:grid-cols-[minmax(0,1fr)_420px]">
         <form
           className={cn("space-y-6", view === "preview" && "hidden lg:block")}
           onSubmit={(e) => {
             e.preventDefault();
-            publish();
+            void publish();
           }}
         >
-          <fieldset className="min-w-0">
+          <fieldset className="min-w-0" disabled={busy}>
             <legend className="mb-2 text-sm font-semibold">What did you make?</legend>
             <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 sm:mx-0 sm:grid sm:grid-cols-3 sm:px-0 xl:grid-cols-5">
               {KINDS.map(({ id, label, icon: Icon }) => (
@@ -235,7 +324,7 @@ export function Composer({ remix }: { remix: FeedPost | null }) {
                   key={id}
                   type="button"
                   aria-pressed={draft.kind === id}
-                  onClick={() => setDraft((d) => ({ ...d, kind: id, model: KIND_MODELS[id][0], uploads: id === d.kind ? d.uploads : [] }))}
+                  onClick={() => setDraft((d) => ({ ...d, kind: id, model: KIND_MODELS[id][0] }))}
                   className={cn(
                     "flex shrink-0 items-center gap-2 rounded-xl border px-3.5 py-2.5 text-sm font-medium transition",
                     draft.kind === id ? "border-accent bg-accent/10 text-fg" : "border-line hover:bg-elevated",
@@ -247,12 +336,13 @@ export function Composer({ remix }: { remix: FeedPost | null }) {
             </div>
           </fieldset>
 
-          <Field label="Title" hint={`${draft.title.length}/80`} error={error}>
+          <Field label="Title" hint={`${draft.title.length}/${LIMITS.postTitle}`} error={error && !draft.title.trim() ? error : undefined}>
             <input
               className="input"
               value={draft.title}
-              maxLength={80}
+              maxLength={LIMITS.postTitle}
               placeholder="Give it a name people will remember"
+              disabled={busy}
               onChange={(e) => {
                 set("title", e.target.value);
                 setError("");
@@ -260,19 +350,26 @@ export function Composer({ remix }: { remix: FeedPost | null }) {
             />
           </Field>
 
-          <KindEditor draft={draft} setDraft={setDraft} onFiles={handleFiles} busy={busy} />
-
-          {usesVisual && draft.uploads.length === 0 && (
-            <VisualPicker visual={draft.visual} onChange={(v) => set("visual", v)} aspect={draft.aspect} onAspect={(a) => set("aspect", a)} kind={draft.kind} />
+          {usesMedia && (
+            <MediaSlots draft={draft} onAdd={addFiles} onRemove={removeStaged} staging={staging} disabled={busy} />
           )}
 
+          <KindFields draft={draft} set={set} />
+
           <Field label="Prompt" hint="Shared publicly so others can learn and remix">
-            <textarea className="input min-h-24 font-mono text-sm" value={draft.prompt} maxLength={1000} onChange={(e) => set("prompt", e.target.value)} placeholder="The exact prompt you used…" />
+            <textarea
+              className="input min-h-24 font-mono text-sm"
+              value={draft.prompt}
+              maxLength={LIMITS.prompt}
+              onChange={(e) => set("prompt", e.target.value)}
+              placeholder="The exact prompt you used…"
+              disabled={busy}
+            />
           </Field>
 
           <div className="grid gap-6 sm:grid-cols-2">
             <Field label="Model / tool">
-              <input className="input" list="models" value={draft.model} onChange={(e) => set("model", e.target.value)} />
+              <input className="input" list="models" value={draft.model} maxLength={LIMITS.model} onChange={(e) => set("model", e.target.value)} disabled={busy} />
               <datalist id="models">
                 {KIND_MODELS[draft.kind].map((m) => (
                   <option key={m} value={m} />
@@ -280,26 +377,46 @@ export function Composer({ remix }: { remix: FeedPost | null }) {
               </datalist>
             </Field>
             <Field label="Tags" hint="Comma separated">
-              <input className="input" value={draft.tags} onChange={(e) => set("tags", e.target.value)} placeholder="cyberpunk, portrait, neon" />
+              <input className="input" value={draft.tags} onChange={(e) => set("tags", e.target.value)} placeholder="cyberpunk, portrait, neon" disabled={busy} />
             </Field>
           </div>
 
-          <Field label="Caption" hint={`${draft.caption.length}/500`}>
-            <textarea className="input min-h-20" value={draft.caption} maxLength={500} onChange={(e) => set("caption", e.target.value)} placeholder="The story behind it, your process, what you learned…" />
+          <Field label="Caption" hint={`${draft.caption.length}/${LIMITS.caption}`}>
+            <textarea
+              className="input min-h-20"
+              value={draft.caption}
+              maxLength={LIMITS.caption}
+              onChange={(e) => set("caption", e.target.value)}
+              placeholder="The story behind it, your process, what you learned…"
+              disabled={busy}
+            />
           </Field>
 
-          <button type="submit" className="w-full rounded-xl bg-brand py-3.5 font-semibold text-white shadow-lg shadow-fuchsia-500/20 transition active:scale-[0.99] lg:hidden">
-            Publish
+          {error && <p role="alert" className="text-sm text-like">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={busy || staging}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand py-3.5 font-semibold text-white shadow-lg shadow-fuchsia-500/20 transition active:scale-[0.99] disabled:opacity-60 lg:hidden"
+          >
+            {busy && <Spinner className="size-4 border-white/40 border-t-white" />}
+            {busy ? status || "Publishing…" : "Publish"}
           </button>
         </form>
 
         <aside className={cn("lg:sticky lg:top-6 lg:self-start", view === "edit" && "hidden lg:block")} aria-label="Preview">
           <p className="mb-2 text-sm font-semibold text-muted">Live preview</p>
           <PostCard post={preview} preview />
-          <button type="button" onClick={publish} className="mt-4 w-full rounded-xl bg-brand py-3.5 font-semibold text-white shadow-lg shadow-fuchsia-500/20 transition active:scale-[0.99]">
-            Publish
+          <button
+            type="button"
+            onClick={() => void publish()}
+            disabled={busy || staging}
+            className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-brand py-3.5 font-semibold text-white shadow-lg shadow-fuchsia-500/20 transition active:scale-[0.99] disabled:opacity-60"
+          >
+            {busy && <Spinner className="size-4 border-white/40 border-t-white" />}
+            {busy ? status || "Publishing…" : "Publish"}
           </button>
-          <p className="mt-2 text-center text-xs text-muted">Posts are saved in this browser until a backend is connected.</p>
+          <p className="mt-2 text-center text-xs text-muted">Your files are stored on our servers. Posts appear on your profile straight away.</p>
         </aside>
       </div>
     </div>
@@ -331,87 +448,74 @@ function Segmented<T extends string>({ value, options, onChange }: { value: T; o
   );
 }
 
-function VisualPicker({ visual, onChange, aspect, onAspect, kind }: { visual: Visual; onChange: (v: Visual) => void; aspect: Aspect; onAspect: (a: Aspect) => void; kind: PostKind }) {
+/** Drop zone for one file type. Keyboard users can activate it, and screen readers get the requirements. */
+function FileDrop({ label, hint, accept, multiple, busy, onFiles }: { label: string; hint: string; accept: string; multiple?: boolean; busy?: boolean; onFiles: (f: FileList) => void }) {
   return (
-    <fieldset className="min-w-0 space-y-3 rounded-2xl border border-line p-4">
-      <legend className="px-1 text-sm font-semibold">Cover visual</legend>
-      <div className="flex gap-4">
-        <div className="relative size-24 shrink-0 overflow-hidden rounded-xl">
-          <Artwork visual={visual} />
-        </div>
-        <div className="min-w-0 space-y-3">
-          <div className="flex flex-wrap gap-1.5">
-            {ART_STYLES.map((s) => (
-              <button key={s} type="button" aria-pressed={visual.style === s} onClick={() => onChange({ ...visual, style: s })} className={cn("rounded-full border px-2.5 py-1 text-xs capitalize", visual.style === s ? "border-fg bg-fg text-bg" : "border-line hover:bg-elevated")}>
-                {s}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {PALETTES.map((p) => (
-              <button
-                key={p.name}
-                type="button"
-                title={p.name}
-                aria-label={`${p.name} palette`}
-                aria-pressed={visual.palette.join() === p.colors.join()}
-                onClick={() => onChange({ ...visual, palette: p.colors })}
-                className={cn("size-6 rounded-full ring-offset-2 ring-offset-bg", visual.palette.join() === p.colors.join() && "ring-2 ring-fg")}
-                style={{ background: `linear-gradient(135deg, ${p.colors[0]}, ${p.colors[2]}, ${p.colors[4]})` }}
-              />
-            ))}
-            <button type="button" onClick={() => onChange({ ...visual, seed: newSeed() })} className="ml-1 inline-flex items-center gap-1 rounded-full bg-elevated px-2.5 py-1 text-xs font-medium hover:bg-line">
-              <Shuffle className="size-3.5" aria-hidden /> Shuffle
-            </button>
-          </div>
-        </div>
-      </div>
-      {(kind === "image" || kind === "gallery") && <Segmented value={aspect} options={["portrait", "square", "landscape"] as const} onChange={onAspect} />}
-    </fieldset>
+    <label
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        onFiles(e.dataTransfer.files);
+      }}
+      className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line p-6 text-center transition hover:border-accent hover:bg-elevated/50 focus-within:border-accent"
+    >
+      {busy ? <Spinner /> : <Upload className="size-7 text-muted" aria-hidden />}
+      <span className="font-medium">{label}</span>
+      <span className="text-xs text-muted">{hint}</span>
+      <input
+        type="file"
+        accept={accept}
+        multiple={multiple}
+        className="sr-only"
+        onChange={(e) => {
+          if (e.target.files) onFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+    </label>
   );
 }
 
-function KindEditor({
+function MediaSlots({
   draft,
-  setDraft,
-  onFiles,
-  busy,
+  onAdd,
+  onRemove,
+  staging,
+  disabled,
 }: {
   draft: Draft;
-  setDraft: React.Dispatch<React.SetStateAction<Draft>>;
-  onFiles: (f: FileList | null) => void;
-  busy: boolean;
+  onAdd: (files: FileList | File[] | null, slot: "images" | "video" | "audio" | "cover" | "model3d") => void;
+  onRemove: (slot: "images" | "video" | "audio" | "cover" | "model3d", id?: string) => void;
+  staging: boolean;
+  disabled: boolean;
 }) {
-  const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((d) => ({ ...d, [key]: value }));
-
   switch (draft.kind) {
     case "image":
-    case "gallery":
+    case "gallery": {
+      const many = draft.kind === "gallery";
       return (
         <div className="space-y-3">
-          <label
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              onFiles(e.dataTransfer.files);
-            }}
-            className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-line p-6 text-center transition hover:border-accent hover:bg-elevated/50"
-          >
-            {busy ? <Spinner /> : <Upload className="size-7 text-muted" aria-hidden />}
-            <span className="font-medium">Drop {draft.kind === "gallery" ? "images" : "an image"} or click to upload</span>
-            <span className="text-xs text-muted">JPG, PNG or WebP · resized to 1280px · or use a generated cover below</span>
-            <input type="file" accept="image/*" multiple={draft.kind === "gallery"} className="sr-only" onChange={(e) => onFiles(e.target.files)} />
-          </label>
-          {draft.uploads.length > 0 && (
+          {(!many ? draft.images.length === 0 : draft.images.length < LIMITS.galleryImages) && (
+            <FileDrop
+              label={many ? "Drop your images or click to choose" : "Drop an image or click to choose"}
+              hint={`JPG, PNG, WebP, GIF or AVIF · up to 20 MB each${many ? ` · ${LIMITS.galleryImages} images` : ""}`}
+              accept={ACCEPT.image}
+              multiple={many}
+              busy={staging}
+              onFiles={(f) => onAdd(f, "images")}
+            />
+          )}
+          {draft.images.length > 0 && (
             <div className="flex flex-wrap gap-2">
-              {draft.uploads.map((src, i) => (
-                <div key={i} className="group relative size-20 overflow-hidden rounded-xl">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt={`Upload ${i + 1}`} className="h-full w-full object-cover" />
+              {draft.images.map((s, i) => (
+                <div key={s.id} className="group relative size-20 overflow-hidden rounded-xl bg-elevated">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- local object URL */}
+                  <img src={s.previewUrl} alt={`Image ${i + 1}`} className="h-full w-full object-cover" />
                   <button
                     type="button"
-                    aria-label={`Remove upload ${i + 1}`}
-                    onClick={() => set("uploads", draft.uploads.filter((_, j) => j !== i))}
+                    aria-label={`Remove image ${i + 1}`}
+                    disabled={disabled}
+                    onClick={() => onRemove("images", s.id)}
                     className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white"
                   >
                     <Trash2 className="size-3.5" />
@@ -420,39 +524,92 @@ function KindEditor({
               ))}
             </div>
           )}
-          {draft.kind === "gallery" && draft.uploads.length === 0 && (
-            <label className="flex items-center gap-3 text-sm">
-              <ImagePlus className="size-4 text-muted" aria-hidden /> Generated slides
-              <input type="range" min={2} max={6} value={draft.galleryCount} onChange={(e) => set("galleryCount", Number(e.target.value))} className="flex-1 accent-violet-500" />
-              <span className="w-4 tabular-nums">{draft.galleryCount}</span>
+          {many && <p className="text-xs text-muted">{draft.images.length}/{LIMITS.galleryImages} images · a series needs at least two</p>}
+        </div>
+      );
+    }
+    case "video":
+      return draft.video ? (
+        <MediaPreview slot="video" disabled={disabled} onRemove={onRemove}>
+              <video src={draft.video.previewUrl} className="max-h-72 w-full rounded-xl bg-black object-contain" muted controls playsInline />
+        </MediaPreview>
+      ) : (
+        <FileDrop label="Drop a video or click to choose" hint="MP4, WebM or MOV · up to 250 MB" accept={ACCEPT.video} busy={staging} onFiles={(f) => onAdd(f, "video")} />
+      );
+    case "audio":
+      return (
+        <div className="space-y-3">
+          {draft.audio ? (
+            <MediaPreview slot="audio" disabled={disabled} onRemove={onRemove}>
+              <audio src={draft.audio.previewUrl} controls className="w-full" />
+            </MediaPreview>
+          ) : (
+            <FileDrop label="Drop a track or click to choose" hint="MP3, M4A, WAV, OGG or FLAC · up to 80 MB" accept={ACCEPT.audio} busy={staging} onFiles={(f) => onAdd(f, "audio")} />
+          )}
+          {draft.cover ? (
+            <MediaPreview slot="cover" disabled={disabled} onRemove={onRemove}>
+              {/* eslint-disable-next-line @next/next/no-img-element -- local object URL */}
+              <img src={draft.cover.previewUrl} alt="Cover art" className="h-40 w-40 rounded-xl object-cover" />
+            </MediaPreview>
+          ) : (
+            <label className="flex items-center gap-3 text-sm text-muted">
+              <ImagePlus className="size-4" aria-hidden />
+              <span>Optional cover art</span>
+              <input type="file" accept={ACCEPT.image} className="sr-only" onChange={(e) => { onAdd(e.target.files, "cover"); e.target.value = ""; }} />
+              <span className="cursor-pointer font-semibold text-accent hover:underline">Choose</span>
             </label>
           )}
         </div>
       );
-    case "video":
-      return (
-        <Field label="Clip length" hint={`${draft.duration}s`}>
-          <input type="range" min={4} max={60} value={draft.duration} onChange={(e) => set("duration", Number(e.target.value))} className="w-full accent-violet-500" />
-        </Field>
-      );
-    case "audio":
-      return (
-        <Field label="Tempo" hint={`${draft.bpm} BPM`}>
-          <input type="range" min={60} max={170} value={draft.bpm} onChange={(e) => set("bpm", Number(e.target.value))} className="w-full accent-violet-500" />
-        </Field>
-      );
     case "3d":
-      return (
-        <div className="space-y-1.5">
-          <p className="text-sm font-semibold">Preview shape</p>
-          <Segmented value={draft.shape} options={["sphere", "cube", "atom"] as const} onChange={(v) => set("shape", v)} />
-        </div>
+      return draft.model3d ? (
+        <MediaPreview slot="model3d" disabled={disabled} onRemove={onRemove}>
+          <p className="flex items-center gap-2 rounded-xl bg-elevated p-4 text-sm">
+            <Music2 className="size-4 text-accent" aria-hidden /> {draft.model3d.file.name} · shown as an interactive 3D viewer after publishing
+          </p>
+        </MediaPreview>
+      ) : (
+        <FileDrop label="Drop a .glb or .gltf model or click to choose" hint="Up to 150 MB · the viewer lets people rotate it" accept={ACCEPT.model} busy={staging} onFiles={(f) => onAdd(f, "model3d")} />
       );
+    default:
+      return null;
+  }
+}
+
+function MediaPreview({
+  slot,
+  disabled,
+  onRemove,
+  children,
+}: {
+  slot: "video" | "audio" | "cover" | "model3d";
+  disabled: boolean;
+  onRemove: (slot: "video" | "audio" | "cover" | "model3d") => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="relative space-y-2 rounded-2xl border border-line p-3">
+      {children}
+      <button type="button" disabled={disabled} onClick={() => onRemove(slot)} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-like">
+        <Trash2 className="size-3.5" aria-hidden /> Remove file
+      </button>
+    </div>
+  );
+}
+
+function KindFields({ draft, set }: { draft: Draft; set: <K extends keyof Draft>(key: K, value: Draft[K]) => void }) {
+  switch (draft.kind) {
     case "text":
       return (
         <div className="space-y-3">
           <Segmented value={draft.textForm} options={TEXT_FORMS} onChange={(v) => set("textForm", v)} />
-          <textarea className="input min-h-48 font-display text-xl leading-relaxed" value={draft.textBody} onChange={(e) => set("textBody", e.target.value)} placeholder="Paste the writing…" />
+          <textarea
+            className="input min-h-48 font-display text-xl leading-relaxed"
+            value={draft.textBody}
+            maxLength={LIMITS.textBody}
+            onChange={(e) => set("textBody", e.target.value)}
+            placeholder="Paste the writing…"
+          />
         </div>
       );
     case "code":
@@ -466,7 +623,14 @@ function KindEditor({
               ))}
             </select>
           </div>
-          <textarea className="input min-h-56 font-mono text-[13px]" spellCheck={false} value={draft.codeSource} onChange={(e) => set("codeSource", e.target.value)} placeholder="Paste your code…" />
+          <textarea
+            className="input min-h-56 font-mono text-[13px]"
+            spellCheck={false}
+            value={draft.codeSource}
+            maxLength={LIMITS.codeSource}
+            onChange={(e) => set("codeSource", e.target.value)}
+            placeholder="Paste your code…"
+          />
         </div>
       );
     case "chat":
@@ -486,6 +650,7 @@ function KindEditor({
               <textarea
                 className="input min-h-12 flex-1 text-sm"
                 value={m.text}
+                maxLength={LIMITS.chatMessages.text}
                 onChange={(e) => set("chat", draft.chat.map((x, j) => (j === i ? { ...x, text: e.target.value } : x)))}
                 placeholder={m.role === "user" ? "What you asked…" : "What the AI answered…"}
               />
@@ -509,7 +674,13 @@ function KindEditor({
           <Segmented value={draft.chartType} options={["bar", "line", "donut"] as const} onChange={(v) => set("chartType", v)} />
           {draft.chartRows.map((row, i) => (
             <div key={i} className="flex gap-2">
-              <input className="input" value={row.label} aria-label={`Label ${i + 1}`} onChange={(e) => set("chartRows", draft.chartRows.map((r, j) => (j === i ? { ...r, label: e.target.value } : r)))} />
+              <input
+                className="input"
+                value={row.label}
+                maxLength={LIMITS.chartRows.label}
+                aria-label={`Label ${i + 1}`}
+                onChange={(e) => set("chartRows", draft.chartRows.map((r, j) => (j === i ? { ...r, label: e.target.value } : r)))}
+              />
               <input
                 className="input w-32"
                 type="number"
@@ -525,12 +696,15 @@ function KindEditor({
           ))}
           <button
             type="button"
+            disabled={draft.chartRows.length >= LIMITS.chartRows.max}
             onClick={() => set("chartRows", [...draft.chartRows, { label: `Item ${draft.chartRows.length + 1}`, value: 10 }])}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-elevated px-3 py-1.5 text-sm font-medium hover:bg-line"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-elevated px-3 py-1.5 text-sm font-medium hover:bg-line disabled:opacity-40"
           >
             <Plus className="size-4" aria-hidden /> Add row
           </button>
         </div>
       );
+    default:
+      return null;
   }
 }

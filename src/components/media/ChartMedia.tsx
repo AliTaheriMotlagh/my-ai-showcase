@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { hashString } from "@/lib/random";
 import { cn } from "@/lib/cn";
 import { compact } from "@/lib/format";
 import type { ChartSpec } from "@/lib/types";
@@ -152,7 +153,7 @@ function LinePath({ values, L, iw, y, bottom, uid, color }: { values: number[]; 
 
 export function ChartMedia({ post, variant }: MediaProps) {
   const spec = post.chart ?? { type: "bar" as const, labels: [], values: [] };
-  const seed = post.visuals[0].seed;
+  const seed = hashString(post.id);
 
   if (variant === "tile") {
     return (

@@ -1,12 +1,13 @@
 import { ArrowRight, Clapperboard, Compass, Gauge, Globe, Repeat2, Search, Smartphone, Sparkles, UserRound, Wand2 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Artwork } from "@/components/art/Artwork";
 import { Avatar } from "@/components/art/Avatar";
+import { PostMedia } from "@/components/media/PostMedia";
 import { JsonLd } from "@/components/ui/primitives";
-import { getFeedPage, topCreators } from "@/lib/data";
 import { KINDS } from "@/lib/kinds";
 import { site } from "@/lib/site";
+import { getTopCreators } from "@/server/queries/people";
+import { getFeedPage } from "@/server/queries/posts";
 
 export const metadata: Metadata = {
   title: `About ${site.name} — the social network for AI creators`,
@@ -32,15 +33,12 @@ const FAQ = [
   { q: `Is ${site.name} free?`, a: "Yes. Creating a profile, posting, exploring and remixing are free." },
 ];
 
-const TESTIMONIALS = [
-  { username: "dreamframes", quote: "My clips finally live next to the prompts that made them. People actually learn from my work now." },
-  { username: "codepoet", quote: "It's the first place where a shader, a poem and a song can sit on the same profile and all make sense." },
-  { username: "softglitch", quote: "Flow is dangerous. I open it for one minute and suddenly I have twelve new ideas." },
-];
-
-export default function AboutPage() {
-  const tiles = getFeedPage({ feed: "explore", seed: 2026, limit: 20 }).items;
-  const creators = topCreators(24);
+export default async function AboutPage() {
+  // Real recent work and real creators only. Sections hide themselves when there is nothing to show yet.
+  const [{ items: tiles }, creators] = await Promise.all([
+    getFeedPage({ feed: "explore", viewerId: null, seed: 2026, limit: 20 }),
+    getTopCreators({ limit: 24 }),
+  ]);
   const rowA = tiles.slice(0, 10);
   const rowB = tiles.slice(10, 20);
 
@@ -75,30 +73,36 @@ export default function AboutPage() {
           </Link>
         </div>
         <div className="mt-8 flex items-center justify-center gap-3">
-          <div className="flex -space-x-2.5">
-            {creators.slice(0, 6).map((u) => (
-              <Avatar key={u.id} user={u} size={34} className="ring-2 ring-bg" />
-            ))}
-          </div>
+          {creators.length > 0 && (
+            <div className="flex -space-x-2.5">
+              {creators.slice(0, 6).map((u) => (
+                <Avatar key={u.id} user={u} size={34} className="ring-2 ring-bg" />
+              ))}
+            </div>
+          )}
           <p className="text-left text-sm text-muted">
-            Loved by AI artists, filmmakers,
+            For AI artists, filmmakers,
             <br className="sm:hidden" /> musicians, writers and coders
           </p>
         </div>
       </section>
 
-      {/* Marquee collage */}
-      <section aria-label="Recent showcases" className="space-y-3 py-6 [mask-image:linear-gradient(90deg,transparent,#000_8%,#000_92%,transparent)]">
-        {[rowA, rowB].map((row, ri) => (
-          <div key={ri} className={`flex w-max gap-3 ${ri ? "animate-marquee-reverse" : "animate-marquee"} hover:[animation-play-state:paused]`}>
-            {[...row, ...row].map((p, i) => (
-              <Link key={`${p.id}-${i}`} href={`/p/${p.id}`} tabIndex={i >= row.length ? -1 : undefined} className="relative h-40 w-32 shrink-0 overflow-hidden rounded-2xl sm:h-56 sm:w-44">
-                <Artwork visual={p.visuals[0]} label={p.title} />
-              </Link>
-            ))}
-          </div>
-        ))}
-      </section>
+      {/* Marquee of real recent work */}
+      {rowA.length >= 5 && (
+        <section aria-label="Recent showcases" className="space-y-3 py-6 [mask-image:linear-gradient(90deg,transparent,#000_8%,#000_92%,transparent)]">
+          {[rowA, rowB.length ? rowB : rowA].map((row, ri) => (
+            <div key={ri} className={`flex w-max gap-3 ${ri ? "animate-marquee-reverse" : "animate-marquee"} hover:[animation-play-state:paused]`}>
+              {[...row, ...row].map((p, i) => (
+                <Link key={`${p.id}-${i}`} href={`/p/${p.id}`} tabIndex={i >= row.length ? -1 : undefined} className="relative h-40 w-32 shrink-0 overflow-hidden rounded-2xl sm:h-56 sm:w-44">
+                  <div className="absolute inset-0">
+                    <PostMedia post={p} variant="tile" />
+                  </div>
+                </Link>
+              ))}
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* Formats */}
       <section className="mx-auto max-w-6xl px-5 py-16 md:py-24">
@@ -151,29 +155,6 @@ export default function AboutPage() {
             </li>
           ))}
         </ol>
-      </section>
-
-      {/* Testimonials */}
-      <section className="px-5 pb-16 md:pb-24">
-        <div className="mx-auto grid max-w-6xl gap-4 md:grid-cols-3">
-          {TESTIMONIALS.map((t) => {
-            const u = creators.find((c) => c.username === t.username)!;
-            return (
-              <figure key={t.username} className="rounded-3xl border border-line bg-card p-6">
-                <blockquote className="font-display text-2xl leading-snug">“{t.quote}”</blockquote>
-                <figcaption className="mt-5 flex items-center gap-3">
-                  <Avatar user={u} size={40} />
-                  <span className="leading-tight">
-                    <Link href={`/u/${u.username}`} className="font-semibold hover:underline">
-                      {u.name}
-                    </Link>
-                    <span className="block text-sm text-muted">{u.headline}</span>
-                  </span>
-                </figcaption>
-              </figure>
-            );
-          })}
-        </div>
       </section>
 
       {/* FAQ */}

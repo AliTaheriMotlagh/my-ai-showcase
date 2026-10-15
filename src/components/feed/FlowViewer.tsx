@@ -3,7 +3,6 @@
 import { ChevronDown, ChevronUp, Repeat2, Sparkles, Wand2, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Artwork } from "@/components/art/Artwork";
 import { Avatar } from "@/components/art/Avatar";
 import { PostMedia } from "@/components/media/PostMedia";
 import { DoubleTap } from "@/components/post/DoubleTap";
@@ -11,11 +10,12 @@ import { PostActions } from "@/components/post/PostActions";
 import { CopyButton, FollowButton } from "@/components/ui/client-bits";
 import { Spinner, VerifiedBadge } from "@/components/ui/primitives";
 import { useInfiniteFeed } from "@/hooks/useInfiniteFeed";
+import { useLike } from "@/hooks/useInteractions";
 import { fetchFeed } from "@/lib/api-client";
 import { cn } from "@/lib/cn";
 import { KIND_MAP, VISUAL_KINDS } from "@/lib/kinds";
 import { profileHref } from "@/lib/links";
-import { actions, useAppStore } from "@/lib/store";
+import { paletteFor } from "@/lib/palettes";
 import type { FeedPost } from "@/lib/types";
 
 /** Items further than this from the active one render as empty placeholders to keep the DOM light. */
@@ -33,11 +33,15 @@ export function FlowViewer({
   user?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
+  /** The active item registers its like toggle here, so the L shortcut works on whatever is on screen. */
+  const activeLikeRef = useRef<(() => void) | null>(null);
+  const setActiveLike = useCallback((toggle: (() => void) | null) => {
+    activeLikeRef.current = toggle;
+  }, []);
   const [active, setActive] = useState(0);
 
   const fetchPage = useCallback(
-    (cursor: number) =>
-      fetchFeed(user ? { feed: "user", user, cursor, limit: 6 } : { feed: "explore", seed, cursor, limit: 6 }),
+    (cursor: number) => fetchFeed(user ? { feed: "user", user, cursor, limit: 6 } : { feed: "explore", seed, cursor, limit: 6 }),
     [user, seed],
   );
   const feed = useInfiniteFeed({ key: user ? `u:${user}` : `ex:${seed}`, fetchPage, initial: { items: initial, nextCursor: initialCursor } });
@@ -74,13 +78,13 @@ export function FlowViewer({
       } else if (e.key === "ArrowUp" || e.key === "k") {
         e.preventDefault();
         go(-1);
-      } else if (e.key === "l" && items[active]) {
-        actions.toggleLike(items[active].id);
+      } else if (e.key === "l") {
+        activeLikeRef.current?.();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, active, items]);
+  }, [go]);
 
   return (
     <div className="relative bg-black text-white">
@@ -97,21 +101,16 @@ export function FlowViewer({
         tabIndex={-1}
       >
         {items.map((post, i) => (
-          <section
-            key={`${post.id}:${i}`}
-            data-index={i}
-            aria-label={`${post.title} by @${post.author.username}`}
-            className="relative h-full w-full snap-start snap-always"
-          >
-            {Math.abs(i - active) <= WINDOW ? <FlowItem post={post} active={i === active} /> : null}
+          <section key={`${post.id}:${i}`} data-index={i} aria-label={`${post.title} by @${post.author.username}`} className="relative h-full w-full snap-start snap-always">
+            {Math.abs(i - active) <= WINDOW ? <FlowItem post={post} active={i === active} onActiveLike={setActiveLike} /> : null}
           </section>
         ))}
         <section className="flex h-full snap-start flex-col items-center justify-center gap-4 p-8 text-center">
           {feed.done ? (
             <>
-              <p className="text-lg font-semibold">You&apos;re all caught up</p>
-              <Link href="/flow" className="rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black">
-                Keep scrolling everything
+              <p className="text-lg font-semibold">{items.length ? "You're all caught up" : "Nothing to show yet"}</p>
+              <Link href="/explore" className="rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black">
+                Explore more
               </Link>
             </>
           ) : feed.error ? (
@@ -136,24 +135,31 @@ export function FlowViewer({
   );
 }
 
-function FlowItem({ post, active }: { post: FeedPost; active: boolean }) {
-  const liked = useAppStore((s) => !!s.liked[post.id]);
+function FlowItem({ post, active, onActiveLike }: { post: FeedPost; active: boolean; onActiveLike: (toggle: (() => void) | null) => void }) {
+  const like = useLike(post);
   const [showPrompt, setShowPrompt] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const visual = VISUAL_KINDS.includes(post.kind);
   const meta = KIND_MAP[post.kind];
+  const likeToggle = like.toggle;
+
+  useEffect(() => {
+    if (!active) return;
+    onActiveLike(() => {
+      if (!like.liked) void likeToggle();
+    });
+    return () => onActiveLike(null);
+  }, [active, like.liked, likeToggle, onActiveLike]);
 
   return (
     <div className="flex h-full w-full items-center justify-center md:gap-5 md:py-4">
       <div className="relative h-full w-full overflow-hidden bg-neutral-950 md:aspect-[9/16] md:w-auto md:max-w-full md:rounded-2xl">
-        <DoubleTap className="h-full w-full" onDoubleTap={() => !liked && actions.toggleLike(post.id)}>
+        <DoubleTap className="h-full w-full" onDoubleTap={() => !like.liked && void likeToggle()}>
           {visual ? (
             <PostMedia post={post} variant="full" active={active} />
           ) : (
             <div className="relative flex h-full w-full items-center justify-center p-4 pb-40 pt-16 md:pb-36">
-              <div className="absolute inset-0 scale-110 opacity-60 blur-2xl">
-                <Artwork visual={post.visuals[0]} grain={false} />
-              </div>
+              <div className="absolute inset-0 scale-110 opacity-60 blur-2xl" style={{ background: `radial-gradient(at 30% 20%, ${paletteFor(post.id)[2]}, transparent 60%), radial-gradient(at 80% 80%, ${paletteFor(post.id)[3]}, transparent 55%), ${paletteFor(post.id)[0]}` }} />
               <div className="relative max-h-full w-full max-w-md overflow-hidden rounded-2xl text-fg shadow-2xl">
                 <div className="max-h-[calc(100dvh-16rem)] overflow-y-auto">
                   <PostMedia post={post} variant="full" active={active} />
@@ -170,25 +176,19 @@ function FlowItem({ post, active }: { post: FeedPost; active: boolean }) {
               <span className="truncate text-sm font-semibold">{post.author.username}</span>
               {post.author.verified && <VerifiedBadge className="size-3.5 text-black" />}
             </Link>
-            <FollowButton userId={post.author.id} variant="overlay" />
+            <FollowButton userId={post.author.id} following={post.viewer.following} isSelf={post.viewer.owner} variant="overlay" />
           </div>
           <h2 className="mt-2 text-[15px] font-semibold leading-snug">{post.title}</h2>
-          <button
-            type="button"
-            onClick={() => setExpanded((e) => !e)}
-            className={cn("pointer-events-auto mt-1 block text-left text-sm text-white/85", !expanded && "line-clamp-2")}
-          >
-            {post.caption}
-          </button>
+          {post.caption && (
+            <button type="button" onClick={() => setExpanded((e) => !e)} className={cn("pointer-events-auto mt-1 block text-left text-sm text-white/85", !expanded && "line-clamp-2")}>
+              {post.caption}
+            </button>
+          )}
           <div className="pointer-events-auto mt-2.5 flex flex-wrap items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 backdrop-blur">
               <meta.icon className="size-3.5" aria-hidden /> {meta.label} · {post.model}
             </span>
-            <button
-              type="button"
-              onClick={() => setShowPrompt(true)}
-              className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 font-semibold backdrop-blur hover:bg-white/25"
-            >
+            <button type="button" onClick={() => setShowPrompt(true)} className="inline-flex items-center gap-1 rounded-full bg-white/15 px-2.5 py-1 font-semibold backdrop-blur hover:bg-white/25">
               <Wand2 className="size-3.5" aria-hidden /> Prompt
             </button>
           </div>
@@ -206,13 +206,15 @@ function FlowItem({ post, active }: { post: FeedPost; active: boolean }) {
                 <X className="size-4" />
               </button>
             </div>
-            <p className="font-mono text-[13px] leading-relaxed text-white/90">{post.prompt}</p>
-            <div className="mt-4 flex gap-2">
-              <CopyButton text={post.prompt} label="Copy prompt" dark className="bg-white/10" />
-              <Link href={`/create?remix=${post.id}`} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white">
-                <Repeat2 className="size-3.5" aria-hidden /> Remix
-              </Link>
-            </div>
+            <p className="font-mono text-[13px] leading-relaxed text-white/90">{post.prompt || "No prompt was shared with this post."}</p>
+            {post.prompt && (
+              <div className="mt-4 flex gap-2">
+                <CopyButton text={post.prompt} label="Copy prompt" dark className="bg-white/10" />
+                <Link href={`/create?remix=${post.id}`} className="inline-flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-semibold text-white">
+                  <Repeat2 className="size-3.5" aria-hidden /> Remix
+                </Link>
+              </div>
+            )}
           </div>
         )}
       </div>

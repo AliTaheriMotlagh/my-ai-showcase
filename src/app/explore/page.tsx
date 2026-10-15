@@ -3,8 +3,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ExploreGrid } from "@/components/feed/ExploreGrid";
 import { KindChips } from "@/components/feed/KindChips";
-import { getFeedPage, newFeedSeed } from "@/lib/data";
 import { isKind, KIND_MAP } from "@/lib/kinds";
+import { getFeedPage } from "@/server/queries/posts";
+import { newFeedSeed } from "@/server/seed";
+import { getViewer } from "@/server/session";
 
 type Props = { searchParams: Promise<{ kind?: string }> };
 
@@ -28,8 +30,9 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 export default async function ExplorePage({ searchParams }: Props) {
   const { kind: k } = await searchParams;
   const kind = isKind(k) ? k : null;
+  const viewer = await getViewer();
   const seed = newFeedSeed();
-  const first = getFeedPage({ feed: "explore", seed, kind, limit: 15 });
+  const first = await getFeedPage({ feed: "explore", viewerId: viewer?.id ?? null, seed, kind, limit: 15 });
 
   return (
     <div className="mx-auto w-full max-w-[975px] md:px-4 md:py-6">

@@ -1,9 +1,10 @@
 import { cn } from "@/lib/cn";
+import { paletteFor } from "@/lib/palettes";
 import type { MediaProps } from "./shared";
 
 export function TextMedia({ post, variant }: MediaProps) {
   const t = post.text ?? { form: "Writing", body: "" };
-  const p = post.visuals[0].palette;
+  const p = paletteFor(post.id);
   const tint = {
     backgroundImage: `radial-gradient(at 0% 0%, ${p[1]}33, transparent 60%), radial-gradient(at 100% 100%, ${p[3]}33, transparent 55%)`,
   };

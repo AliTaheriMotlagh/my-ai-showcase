@@ -1,35 +1,35 @@
 "use client";
 
-import { Clapperboard, Compass, Sparkles, UserPlus, X } from "lucide-react";
+import { Clapperboard, Compass, Sparkles, UserPlus } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { PostCard } from "@/components/post/PostCard";
 import { useInfiniteFeed } from "@/hooks/useInfiniteFeed";
 import { fetchFeed } from "@/lib/api-client";
 import { cn } from "@/lib/cn";
 import { site } from "@/lib/site";
-import { actions, useAppStore, useHydrated } from "@/lib/store";
 import type { FeedPost } from "@/lib/types";
 import { FeedFooter } from "./FeedFooter";
 
 type Tab = "foryou" | "following";
 
-export function HomeFeed({ initial, initialCursor, children }: { initial: FeedPost[]; initialCursor: number | null; children?: ReactNode }) {
+export function HomeFeed({
+  initial,
+  initialCursor,
+  signedIn,
+  children,
+}: {
+  initial: FeedPost[];
+  initialCursor: number | null;
+  signedIn: boolean;
+  children?: ReactNode;
+}) {
   const [tab, setTab] = useState<Tab>("foryou");
-  const following = useAppStore((s) => s.following);
-  const localPosts = useAppStore((s) => s.posts);
-  const welcomeDismissed = useAppStore((s) => s.welcomeDismissed);
-  const hydrated = useHydrated();
-  const authors = useMemo(() => Object.keys(following).sort().join(","), [following]);
-
-  const fetchPage = useCallback(
-    (cursor: number) => fetchFeed({ feed: tab, cursor, limit: 8, authors: tab === "following" ? authors : undefined }),
-    [tab, authors],
-  );
+  const fetchPage = useCallback((cursor: number) => fetchFeed({ feed: tab, cursor, limit: 8 }), [tab]);
   const feed = useInfiniteFeed({
-    key: tab === "foryou" ? "foryou" : `following:${authors}`,
+    key: tab,
     fetchPage,
-    initial: { items: initial, nextCursor: initialCursor },
+    initial: tab === "foryou" ? { items: initial, nextCursor: initialCursor } : undefined,
   });
 
   return (
@@ -60,28 +60,42 @@ export function HomeFeed({ initial, initialCursor, children }: { initial: FeedPo
 
       {children}
 
-      {hydrated && !welcomeDismissed && <WelcomeCard />}
+      {!signedIn && <WelcomeCard />}
 
-      <div className="flex flex-col sm:gap-5 sm:pt-2">
-        {tab === "foryou" && localPosts.map((p) => <PostCard key={p.id} post={p} />)}
-        {feed.items.map((p, i) => (
-          <PostCard key={`${p.id}:${i}`} post={p} />
-        ))}
-      </div>
-
-      <FeedFooter
-        {...feed}
-        empty={
-          <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-16 text-center">
-            <UserPlus className="size-10 text-muted" aria-hidden />
-            <h2 className="text-lg font-semibold">Your Following feed is empty</h2>
-            <p className="text-sm text-muted">Follow creators you love and their newest work will show up here.</p>
-            <Link href="/explore" className="mt-2 rounded-full bg-fg px-5 py-2.5 text-sm font-semibold text-bg">
-              Find creators
-            </Link>
+      {tab === "following" && !signedIn ? (
+        <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-16 text-center">
+          <UserPlus className="size-10 text-muted" aria-hidden />
+          <h2 className="text-lg font-semibold">Log in to see creators you follow</h2>
+          <Link href="/login?next=/" className="mt-2 rounded-full bg-fg px-5 py-2.5 text-sm font-semibold text-bg">
+            Log in
+          </Link>
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-col sm:gap-5 sm:pt-2">
+            {feed.items.map((p, i) => (
+              <PostCard key={`${p.id}:${i}`} post={p} />
+            ))}
           </div>
-        }
-      />
+          <FeedFooter
+            {...feed}
+            empty={
+              <div className="mx-auto flex max-w-sm flex-col items-center gap-3 px-6 py-16 text-center">
+                <UserPlus className="size-10 text-muted" aria-hidden />
+                <h2 className="text-lg font-semibold">{tab === "following" ? "Nothing from people you follow yet" : "No showcases yet"}</h2>
+                <p className="text-sm text-muted">
+                  {tab === "following"
+                    ? "Follow creators you love and their newest work will show up here."
+                    : "Be the first to share something you made with AI."}
+                </p>
+                <Link href={tab === "following" ? "/explore" : "/create"} className="mt-2 rounded-full bg-fg px-5 py-2.5 text-sm font-semibold text-bg">
+                  {tab === "following" ? "Find creators" : "Create a showcase"}
+                </Link>
+              </div>
+            }
+          />
+        </>
+      )}
     </>
   );
 }
@@ -90,24 +104,16 @@ function WelcomeCard() {
   return (
     <section aria-label={`Welcome to ${site.name}`} className="relative mx-3 my-4 overflow-hidden rounded-2xl bg-brand p-[1px] sm:mx-0">
       <div className="relative rounded-[15px] bg-card p-5">
-        <button
-          type="button"
-          aria-label="Dismiss"
-          onClick={actions.dismissWelcome}
-          className="absolute right-3 top-3 grid size-8 place-items-center rounded-full text-muted hover:bg-elevated hover:text-fg"
-        >
-          <X className="size-4" />
-        </button>
         <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-accent">
           <Sparkles className="size-4" aria-hidden /> Welcome to {site.name}
         </p>
-        <h2 className="mt-2 pr-8 font-display text-3xl leading-tight">Everything made with AI, in one endless feed.</h2>
+        <h2 className="mt-2 pr-8 font-display text-3xl leading-tight">Everything made with AI, in one feed.</h2>
         <p className="mt-2 text-sm text-muted">
-          Images, video, music, writing, code, data and 3D. Double-tap to like, copy any prompt, and remix it with credit.
+          Images, video, music, writing, code, data and 3D. Share your work with its prompt, and build a profile that works as a portfolio and link page.
         </p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/create" className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white">
-            Share your first creation
+          <Link href="/signup" className="rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white">
+            Create an account
           </Link>
           <Link href="/flow" className="inline-flex items-center gap-1.5 rounded-full bg-elevated px-4 py-2 text-sm font-semibold hover:bg-line">
             <Clapperboard className="size-4" aria-hidden /> Open Flow

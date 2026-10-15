@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Artwork } from "@/components/art/Artwork";
 import { Avatar } from "@/components/art/Avatar";
 import { TileGrid } from "@/components/post/ExploreTile";
 import { SearchInput } from "@/components/search/SearchInput";
 import { FollowButton } from "@/components/ui/client-bits";
 import { SectionTitle, VerifiedBadge } from "@/components/ui/primitives";
-import { getFeedPage, getSuggestedUsers, getTrendingTags, search } from "@/lib/data";
+import { PostMedia } from "@/components/media/PostMedia";
 import { compact } from "@/lib/format";
 import { KINDS } from "@/lib/kinds";
-import type { User } from "@/lib/types";
+import type { UserSummary } from "@/lib/types";
+import { getTrendingTags, search } from "@/server/queries/discover";
+import { getTopCreators, isFollowing } from "@/server/queries/people";
+import { getFeedPage } from "@/server/queries/posts";
+import { getViewer } from "@/server/session";
 
 type Props = { searchParams: Promise<{ q?: string }> };
 
@@ -23,7 +26,8 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
   };
 }
 
-function PersonRow({ u }: { u: User }) {
+async function PersonRow({ u, viewerId }: { u: UserSummary; viewerId: string | null }) {
+  const following = await isFollowing(viewerId, u.id);
   return (
     <li className="flex items-center gap-3 py-2">
       <Link href={`/u/${u.username}`} className="shrink-0">
@@ -34,19 +38,18 @@ function PersonRow({ u }: { u: User }) {
           <span className="truncate">{u.name}</span>
           {u.verified && <VerifiedBadge />}
         </Link>
-        <p className="truncate text-sm text-muted">
-          @{u.username} · {compact(u.followers)} followers
-        </p>
-        <p className="truncate text-sm">{u.headline}</p>
+        <p className="truncate text-sm text-muted">@{u.username}</p>
+        {u.headline && <p className="truncate text-sm">{u.headline}</p>}
       </div>
-      <FollowButton userId={u.id} />
+      <FollowButton userId={u.id} following={following} isSelf={viewerId === u.id} />
     </li>
   );
 }
 
 export default async function SearchPage({ searchParams }: Props) {
   const { q = "" } = await searchParams;
-  const results = search(q);
+  const viewer = await getViewer();
+  const results = await search(q, viewer?.id ?? null);
 
   return (
     <div className="mx-auto w-full max-w-[760px] space-y-8 px-4 pb-12 pt-4 md:pt-8">
@@ -64,9 +67,7 @@ export default async function SearchPage({ searchParams }: Props) {
               <section>
                 <SectionTitle>People</SectionTitle>
                 <ul className="divide-y divide-line">
-                  {results.people.map((u) => (
-                    <PersonRow key={u.id} u={u} />
-                  ))}
+                  {await Promise.all(results.people.map((u) => PersonRow({ u, viewerId: viewer?.id ?? null })))}
                 </ul>
               </section>
             )}
@@ -91,25 +92,32 @@ export default async function SearchPage({ searchParams }: Props) {
           </>
         )
       ) : (
-        <BrowseHome />
+        <BrowseHome viewerId={viewer?.id ?? null} />
       )}
     </div>
   );
 }
 
-function BrowseHome() {
-  const tags = getTrendingTags(12);
-  const people = getSuggestedUsers(6);
+async function BrowseHome({ viewerId }: { viewerId: string | null }) {
+  const [tags, people, samples] = await Promise.all([
+    getTrendingTags(12),
+    getTopCreators({ limit: 6, viewerId, excludeFollowedBy: viewerId }),
+    Promise.all(KINDS.map((k) => getFeedPage({ feed: "explore", viewerId: null, kind: k.id, seed: 7, limit: 1 }))),
+  ]);
   return (
     <>
       <section>
         <SectionTitle>Browse by format</SectionTitle>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {KINDS.map((k) => {
-            const sample = getFeedPage({ feed: "explore", kind: k.id, seed: 7, limit: 1 }).items[0];
+          {KINDS.map((k, i) => {
+            const sample = samples[i].items[0];
             return (
-              <Link key={k.id} href={`/explore?kind=${k.id}`} className="group relative aspect-[16/10] overflow-hidden rounded-2xl">
-                {sample && <Artwork visual={sample.visuals[0]} className="transition-transform duration-500 group-hover:scale-105" />}
+              <Link key={k.id} href={`/explore?kind=${k.id}`} className="group relative aspect-[16/10] overflow-hidden rounded-2xl bg-elevated">
+                {sample && (
+                  <div className="absolute inset-0 transition-transform duration-500 group-hover:scale-105">
+                    <PostMedia post={sample} variant="tile" />
+                  </div>
+                )}
                 <span className="absolute inset-0 bg-linear-to-t from-black/75 to-black/10" />
                 <span className="absolute bottom-3 left-3 flex items-center gap-2 font-semibold text-white">
                   <k.icon className="size-5" aria-hidden /> {k.plural}
@@ -119,24 +127,24 @@ function BrowseHome() {
           })}
         </div>
       </section>
-      <section>
-        <SectionTitle>Trending tags</SectionTitle>
-        <div className="flex flex-wrap gap-2">
-          {tags.map((t) => (
-            <Link key={t.tag} href={`/tags/${t.tag}`} className="rounded-full border border-line px-3 py-1.5 text-sm hover:bg-elevated">
-              #{t.tag}
-            </Link>
-          ))}
-        </div>
-      </section>
-      <section>
-        <SectionTitle>Creators to follow</SectionTitle>
-        <ul className="divide-y divide-line">
-          {people.map((u) => (
-            <PersonRow key={u.id} u={u} />
-          ))}
-        </ul>
-      </section>
+      {tags.length > 0 && (
+        <section>
+          <SectionTitle>Trending tags</SectionTitle>
+          <div className="flex flex-wrap gap-2">
+            {tags.map((t) => (
+              <Link key={t.tag} href={`/tags/${t.tag}`} className="rounded-full border border-line px-3 py-1.5 text-sm hover:bg-elevated">
+                #{t.tag} <span className="text-muted">{compact(t.count)}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+      {people.length > 0 && (
+        <section>
+          <SectionTitle>Creators to follow</SectionTitle>
+          <ul className="divide-y divide-line">{await Promise.all(people.map((u) => PersonRow({ u, viewerId })))}</ul>
+        </section>
+      )}
     </>
   );
 }

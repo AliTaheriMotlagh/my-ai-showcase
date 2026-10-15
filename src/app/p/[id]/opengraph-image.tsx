@@ -1,9 +1,9 @@
 import { ImageResponse } from "next/og";
-import { getPost } from "@/lib/data";
 import { compact, truncate } from "@/lib/format";
 import { KIND_MAP } from "@/lib/kinds";
 import { OG_SIZE, OgFrame } from "@/lib/og";
-import { PALETTES } from "@/lib/palettes";
+import { paletteFor } from "@/lib/palettes";
+import { getPost } from "@/server/queries/posts";
 
 export const size = OG_SIZE;
 export const contentType = "image/png";
@@ -11,13 +11,11 @@ export const alt = "AI showcase post";
 
 export default async function Image({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const post = getPost(id);
-  if (!post) {
-    return new ImageResponse(<OgFrame palette={PALETTES[0].colors}>{null}</OgFrame>, size);
-  }
+  const post = await getPost(id, null);
+  if (!post) return new ImageResponse(<OgFrame palette={paletteFor("latent")}>{null}</OgFrame>, size);
   return new ImageResponse(
     (
-      <OgFrame palette={post.visuals[0].palette}>
+      <OgFrame palette={paletteFor(post.id)}>
         <div style={{ fontSize: 26, opacity: 0.85, display: "flex", textTransform: "uppercase", letterSpacing: 3 }}>
           AI {KIND_MAP[post.kind].label} · {post.model}
         </div>

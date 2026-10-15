@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import type { PostKind } from "./types";
 
+/** Kind ids in display order. Used for validation as well as the UI. */
+export const POST_KINDS = ["image", "gallery", "video", "audio", "text", "code", "chat", "chart", "3d"] as const satisfies readonly PostKind[];
+
 export interface KindMeta {
   id: PostKind;
   label: string;

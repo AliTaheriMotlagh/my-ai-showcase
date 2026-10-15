@@ -1,6 +1,6 @@
-import type { ArtStyle } from "./types";
+import { hashString } from "./random";
 
-/** Index 0 is the background; the rest are accents. */
+/** Index 0 is the background; the rest are accents. Used for fallbacks (no avatar, no banner, text cards). */
 export const PALETTES: { name: string; colors: string[] }[] = [
   { name: "Nebula", colors: ["#0b0221", "#3a0ca3", "#7209b7", "#f72585", "#4cc9f0"] },
   { name: "Sunset", colors: ["#1a0b2e", "#ff6b35", "#f7c59f", "#efa00b", "#d62246"] },
@@ -16,4 +16,5 @@ export const PALETTES: { name: string; colors: string[] }[] = [
   { name: "Peach", colors: ["#2d1e2f", "#f9a26c", "#f7d6bf", "#e05780", "#7b2cbf"] },
 ];
 
-export const ART_STYLES: ArtStyle[] = ["mesh", "orbit", "bauhaus", "waves", "flow", "bloom", "planet", "dunes"];
+/** The same key always gets the same palette, so a creator's avatar and banner stay consistent. */
+export const paletteFor = (key: string) => PALETTES[hashString(key) % PALETTES.length].colors;
